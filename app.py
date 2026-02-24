@@ -1,0 +1,110 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+import shap
+import matplotlib.pyplot as plt
+
+# 1. Page Configuration
+st.set_page_config(
+    page_title="LGD Risk Predictor",
+    page_icon="⚕️",
+    layout="wide"
+)
+
+# 2. Title and Description
+st.title("Ulcerative Colitis LGD Risk Prediction Model")
+st.markdown("""
+This tool uses a machine learning model (LightGBM) to predict the risk of Low-Grade Dysplasia (LGD) in patients with Ulcerative Colitis. 
+Please input the patient's clinical and endoscopic features in the sidebar to generate a prediction and SHAP explanation.
+""")
+
+# 3. Load Model (Cached for performance)
+@st.cache_resource
+def load_model():
+    # Load the model exported from R
+    model = lgb.Booster(model_file='lgb_model.txt')
+    return model
+
+model = load_model()
+
+# 4. Sidebar: Feature Input
+st.sidebar.header("Patient Features")
+
+# Continuous Variables
+age_onset = st.sidebar.number_input("Age at Onset (years)", min_value=0, max_value=100, value=30, step=1)
+duration = st.sidebar.number_input("Disease Duration (years)", min_value=0.0, max_value=60.0, value=5.0, step=0.1)
+esr = st.sidebar.number_input("ESR (mm/h)", min_value=0.0, max_value=200.0, value=15.0, step=1.0)
+
+# Categorical Variables
+montreal = st.sidebar.selectbox("Montreal Classification", ["E1", "E2", "E3"])
+uceis = st.sidebar.selectbox("UCEIS Score", ["1", "2", "3"])
+histology = st.sidebar.selectbox("Moderate-to-severe Histological Activity", ["No", "Yes"])
+stenosis = st.sidebar.selectbox("Presence of Stenosis", ["No", "Yes"])
+polyp = st.sidebar.selectbox("Presence of Polyps", ["No", "Yes"])
+cdiff = st.sidebar.selectbox("History of C. difficile Infection", ["No", "Yes"])
+
+# 5. Prediction Logic
+if st.sidebar.button("Predict Risk"):
+    
+    # Data preprocessing: Map categorical inputs to model dummy variables
+    # Must strictly match the 'model.matrix' column names in your R code
+    montreal_e3 = 1 if montreal == "E3" else 0
+    uceis_2 = 1 if uceis == "2" else 0
+    uceis_3 = 1 if uceis == "3" else 0
+    mod_severe = 1 if histology == "Yes" else 0
+    stenosis_val = 1 if stenosis == "Yes" else 0
+    polyp_val = 1 if polyp == "Yes" else 0
+    cdiff_val = 1 if cdiff == "Yes" else 0
+    
+    # Create DataFrame for prediction
+    input_df = pd.DataFrame({
+        'Ageatonset': [age_onset],
+        'Duration': [duration],
+        'ESR': [esr],
+        'MontrealClassificationE3': [montreal_e3],
+        'UCEIS2': [uceis_2],
+        'UCEIS3': [uceis_3],
+        'ModSevereHistologyYes': [mod_severe],
+        'StenosisYes': [stenosis_val],
+        'PolypYes': [polyp_val],
+        'CdifficileYes': [cdiff_val]
+    })
+    
+    # Create columns for layout
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("Prediction Result")
+        with st.spinner("Calculating probability..."):
+            # LightGBM binary classification returns a 1D array of probabilities
+            probability = model.predict(input_df)[0]
+            
+            # Display metrics
+            st.metric(label="Predicted Probability of LGD", value=f"{probability:.2%}")
+            
+            # Threshold judgement (You can adjust the 0.5 threshold to your Youden index)
+            if probability >= 0.5:
+                st.error("⚠️ **High Risk Group**: The patient is predicted to have a high risk of LGD.")
+            else:
+                st.success("✅ **Low Risk Group**: The patient is predicted to have a low risk of LGD.")
+                
+            st.info("Disclaimer: This tool is for research purposes only and does not substitute professional medical advice.")
+
+    with col2:
+        st.subheader("Model Explanation (SHAP)")
+        st.markdown("This waterfall plot shows how each specific feature contributed to this patient's final predicted probability.")
+        
+        with st.spinner("Generating SHAP plot..."):
+            try:
+                # Initialize SHAP explainer for LightGBM
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer(input_df)
+                
+                # Create and display plot
+                fig, ax = plt.subplots(figsize=(6, 4))
+                shap.plots.waterfall(shap_values[0], show=False)
+                plt.tight_layout()
+                st.pyplot(fig)
+            except Exception as e:
+                st.warning(f"SHAP explanation could not be generated. Error: {e}")
